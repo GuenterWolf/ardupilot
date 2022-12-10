@@ -19,6 +19,7 @@
 #include <GCS_MAVLink/GCS.h>
 
 extern const AP_HAL::HAL& hal;
+uint8_t frametype;
 
 // init
 void AP_MotorsSingle::init(motor_frame_class frame_class, motor_frame_type frame_type)
@@ -41,6 +42,8 @@ void AP_MotorsSingle::init(motor_frame_class frame_class, motor_frame_type frame
 
     // record successful initialisation if what we setup was the desired frame_class
     set_initialised_ok(frame_class == MOTOR_FRAME_SINGLE);
+
+    frametype = frame_type;
 }
 
 // set frame class (i.e. quad, hexa, heli) and type (i.e. x, plus)
@@ -69,10 +72,40 @@ void AP_MotorsSingle::output_to_motors()
     switch (_spool_state) {
         case SpoolState::SHUT_DOWN:
             // sends minimum values out to the motors
-            rc_write_angle(AP_MOTORS_MOT_1, _roll_radio_passthrough * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
-            rc_write_angle(AP_MOTORS_MOT_2, _pitch_radio_passthrough * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
-            rc_write_angle(AP_MOTORS_MOT_3, -_roll_radio_passthrough * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
-            rc_write_angle(AP_MOTORS_MOT_4, -_pitch_radio_passthrough * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
+            if (frametype == MOTOR_FRAME_TYPE_ATAIL) {
+                // copter has 3 servos in "A" order: servo #1 points forward, servos #2 & #3 are placed 120° clockwise circular next to each other
+                // specify dead zones, so that flaps don't jitter if the RC-stick is approx. in zero position
+                if (abs(_roll_radio_passthrough) < 0.01f) {
+                    _roll_radio_passthrough = 0.0f;
+                }
+                if (abs(_pitch_radio_passthrough) < 0.01f) {
+                    _pitch_radio_passthrough = 0.0f;
+                }
+                float targetAngle = 0.0f;   // angle in rad at which the RC-stick points to: up = π/2, down = -π/2, left = π, right = 0
+                // check that the RC-stick is not in zero position, otherwise atan2(0, 0) would throw an error
+                if (_roll_radio_passthrough != 0.0f || _pitch_radio_passthrough != 0.0f) {
+                    targetAngle = atan2(_pitch_radio_passthrough, _roll_radio_passthrough);
+                }
+                float vector = sqrt(pow(_roll_radio_passthrough, 2) + pow(_pitch_radio_passthrough, 2));   // pitch of the RC-stick: 0 = stick is in zero position, 1 = stick is at maximum position
+                if (vector > 1.0f) {
+                    vector = 1.0f;
+                }
+                float PI = 3.14159265;
+                float angleMotor1 = cos(targetAngle) * vector;                     // angle of motor #1, +/- 1.0
+                float angleMotor2 = cos(targetAngle - PI * 3.0f / 4.0f) * vector;  // angle of motor #2, +/- 1.0
+                float angleMotor3 = cos(targetAngle + PI * 3.0f / 4.0f) * vector;  // angle of motor #3, +/- 1.0
+                rc_write_angle(AP_MOTORS_MOT_1, angleMotor1 * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
+                rc_write_angle(AP_MOTORS_MOT_2, angleMotor2 * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
+                rc_write_angle(AP_MOTORS_MOT_3, angleMotor3 * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
+                rc_write_angle(AP_MOTORS_MOT_4, 0.0f);  // motor #4 is absent
+            }
+            else {
+                // copter has 4 servos in "+" order: classic singlecopter
+                rc_write_angle(AP_MOTORS_MOT_1, _roll_radio_passthrough * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
+                rc_write_angle(AP_MOTORS_MOT_2, _pitch_radio_passthrough * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
+                rc_write_angle(AP_MOTORS_MOT_3, -_roll_radio_passthrough * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
+                rc_write_angle(AP_MOTORS_MOT_4, -_pitch_radio_passthrough * AP_MOTORS_SINGLE_SERVO_INPUT_RANGE);
+            }
             rc_write(AP_MOTORS_MOT_5, output_to_pwm(0));
             rc_write(AP_MOTORS_MOT_6, output_to_pwm(0));
             break;
@@ -176,14 +209,48 @@ void AP_MotorsSingle::output_armed_stabilizing()
     }
 
     // combine roll, pitch and yaw on each actuator
-    // front servo
-    actuator[0] = rp_scale * roll_thrust - yaw_thrust;
-    // right servo
-    actuator[1] = rp_scale * pitch_thrust - yaw_thrust;
-    // rear servo
-    actuator[2] = -rp_scale * roll_thrust - yaw_thrust;
-    // left servo
-    actuator[3] = -rp_scale * pitch_thrust - yaw_thrust;
+    if (frametype == MOTOR_FRAME_TYPE_ATAIL) {
+        // copter has 3 servos in "A" order: servo #1 points forward, servos #2 & #3 are placed 120° clockwise circular next to each other
+        // specify dead zones, so that flaps don't jitter if the RC-stick is approx. in zero position
+        if (abs(roll_thrust) < 0.01f) {
+            roll_thrust = 0.0f;
+        }
+        if (abs(pitch_thrust) < 0.01f) {
+            pitch_thrust = 0.0f;
+        }
+        float targetAngle = 0.0f;   // angle in rad at which the RC-stick points to: up = π/2, down = -π/2, left = π, right = 0
+        // check that the RC-stick is not in zero position, otherwise atan2(0, 0) would throw an error
+        if (roll_thrust != 0.0f || pitch_thrust != 0.0f) {
+            targetAngle = atan2(pitch_thrust, roll_thrust);
+        }
+        float vector = sqrt(pow(roll_thrust, 2) + pow(pitch_thrust, 2));   // pitch of the RC-stick: 0 = stick is in zero position, 1 = stick is at maximum position
+        if (vector > 1.0f) {
+            vector = 1.0f;
+        }
+        float PI = 3.14159265;
+        float angleMotor1 = cos(targetAngle) * vector;                     // angle of motor #1, +/- 1.0
+        float angleMotor2 = cos(targetAngle - PI * 3.0f / 4.0f) * vector;  // angle of motor #2, +/- 1.0
+        float angleMotor3 = cos(targetAngle + PI * 3.0f / 4.0f) * vector;  // angle of motor #3, +/- 1.0
+        // front servo
+        actuator[0] = rp_scale * angleMotor1 - yaw_thrust;
+        // rear right servo
+        actuator[1] = rp_scale * angleMotor2 - yaw_thrust;
+        // rear left servo
+        actuator[2] = rp_scale * angleMotor3 - yaw_thrust;
+        // left servo is absent
+        actuator[3] = 0.0f;
+    }
+    else {
+        // copter has 4 servos in "+" order = classic singlecopter
+        // front servo
+        actuator[0] = rp_scale * roll_thrust - yaw_thrust;
+        // right servo
+        actuator[1] = rp_scale * pitch_thrust - yaw_thrust;
+        // rear servo
+        actuator[2] = -rp_scale * roll_thrust - yaw_thrust;
+        // left servo
+        actuator[3] = -rp_scale * pitch_thrust - yaw_thrust;
+    }
 
     // calculate the minimum thrust that doesn't limit the roll, pitch and yaw forces
     thrust_min_rpy = MAX(MAX(fabsf(actuator[0]), fabsf(actuator[1])), MAX(fabsf(actuator[2]), fabsf(actuator[3])));
